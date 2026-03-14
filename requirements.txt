@@ -1,0 +1,2 @@
+tinytuya>=1.15.0
+tuya-connector-python>=0.1.2
