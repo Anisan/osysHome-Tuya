@@ -466,10 +466,9 @@
                                     <th style="width:70px">{{ _('DP') }}</th>
                                     <th style="width:70px">{{ _('Type') }}</th>
                                     <th style="width:150px">{{ _('Current value') }}</th>
-                                    <th>{{ _('Object') }}</th>
-                                    <th>{{ _('Property') }}</th>
-                                    <th>{{ _('Method') }}</th>
+                                    <th>{{ _('Link') }}</th>
                                     <th style="width:90px">{{ _('Mode') }}</th>
+                                    <th style="width:70px"></th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -482,10 +481,17 @@
                                     <td><span class="badge bg-info">[[ dps.type ]]</span></td>
                                     <td>
                                         <div class="d-flex flex-column">
-                                            <span class="font-monospace small" :title="dps.current_value !== undefined && dps.current_value !== null ? String(dps.current_value) : ''">
-                                                <span v-if="dps.current_value !== undefined && dps.current_value !== null" :class="dps.current_value === true || dps.current_value === 1 || dps.current_value === '1' ? 'text-success' : 'text-secondary'">
-                                                    [[ formatDpsValue(dps.current_value) ]]
-                                                </span>
+                                            <span class="font-monospace small"
+                                                  :title="dps.current_value !== undefined && dps.current_value !== null ? String(dps.current_value) : ''">
+                                                <template v-if="dps.current_value !== undefined && dps.current_value !== null">
+                                                    <span :class="dps.current_value === true || dps.current_value === 1 || dps.current_value === '1' ? 'text-success' : 'text-secondary'">
+                                                        [[ formatDpsValue(dps.current_value) ]]
+                                                    </span>
+                                                    <span v-if="dps.converted_value !== undefined && dps.converted_value !== null"
+                                                          class="text-muted ms-1">
+                                                        → [[ formatDpsValue(dps.converted_value) ]]
+                                                    </span>
+                                                </template>
                                                 <span v-else class="text-muted">—</span>
                                             </span>
                                             <small class="text-muted mt-0" v-if="dps.last_changed" :title="dps.last_changed">
@@ -494,34 +500,45 @@
                                         </div>
                                     </td>
                                     <td>
-                                        <select-with-filter
-                                            placeholder="{{ _('Select object') }}"
-                                            :options="objectOptions"
-                                            v-model="dpsLinks[dps.code].linked_object"
-                                            @changed="dpsLinks[dps.code].linked_property = null; dpsLinks[dps.code].linked_method = null">
-                                        </select-with-filter>
+                                        <template v-if="dpsLinks[dps.code] && dpsLinks[dps.code].linked_object">
+                                            <span class="badge bg-primary me-1">
+                                                [[ dpsLinks[dps.code].linked_object ]]
+                                            </span>
+                                            <template v-if="dpsLinks[dps.code].linked_property">
+                                                <a class="badge bg-success text-decoration-none me-1"
+                                                   :href="'/admin/Objects?view=object&object='+dpsLinks[dps.code].linked_object+'&tab=properties'">
+                                                    [[ dpsLinks[dps.code].linked_property ]]
+                                                </a>
+                                            </template>
+                                            <template v-if="dpsLinks[dps.code].linked_method">
+                                                <a class="badge bg-secondary text-decoration-none"
+                                                   :href="'/admin/Objects?view=object&object='+dpsLinks[dps.code].linked_object+'&tab=methods'">
+                                                    [[ dpsLinks[dps.code].linked_method ]]
+                                                </a>
+                                            </template>
+                                        </template>
+                                        <span v-else class="badge rounded-pill border text-body-secondary">
+                                            {{ _('Not linked') }}
+                                        </span>
                                     </td>
                                     <td>
-                                        <select-with-filter v-if="dpsLinks[dps.code].linked_object && dpsLinks[dps.code].linked_object in objects"
-                                            placeholder="{{ _('Select property') }}"
-                                            :options="objects[dpsLinks[dps.code].linked_object].properties"
-                                            v-model="dpsLinks[dps.code].linked_property">
-                                        </select-with-filter>
-                                    </td>
-                                    <td>
-                                        <select-with-filter v-if="dpsLinks[dps.code].linked_object && dpsLinks[dps.code].linked_object in objects"
-                                            placeholder="{{ _('Select method') }}"
-                                            :options="objects[dpsLinks[dps.code].linked_object].methods"
-                                            v-model="dpsLinks[dps.code].linked_method">
-                                        </select-with-filter>
-                                    </td>
-                                    <td>
-                                        <div class="form-check" v-if="dps.writable">
-                                            <input class="form-check-input" type="checkbox"
-                                                   v-model="dpsLinks[dps.code].read_only">
-                                            <label class="form-check-label small">R/O</label>
-                                        </div>
+                                        <template v-if="dps.writable">
+                                            <span v-if="dpsLinks[dps.code] && dpsLinks[dps.code].read_only"
+                                                  class="badge bg-warning text-dark">
+                                                {{ _('Readonly') }}
+                                            </span>
+                                            <span v-else class="badge bg-success">
+                                                {{ _('RW') }}
+                                            </span>
+                                        </template>
                                         <span v-else class="badge bg-secondary">R/O</span>
+                                    </td>
+                                    <td class="text-end">
+                                        <button type="button" class="btn btn-sm btn-outline-primary"
+                                                @click="openEditLinkModal(dps)"
+                                                title="{{ _('Edit link') }}">
+                                            <i class="fas fa-pencil-alt"></i>
+                                        </button>
                                     </td>
                                 </tr>
                             </tbody>
@@ -540,6 +557,63 @@
                         <i class="fas fa-spinner fa-spin me-1" v-if="linkSaving"></i>
                         <i class="fas fa-save me-1" v-else></i>{{ _('Save') }}
                     </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Edit single DPS link modal (similar to z2m_device) -->
+    <div class="modal fade" id="editLinkModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        {{ _('Settings link') }}
+                        <small v-if="editDps" class="text-muted ms-2">[[ editDps.label ]] ([[ editDps.code ]])</small>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" v-if="editDps && editDpsLink">
+                    <div class="mb-3">
+                        <label class="form-label">{{ _('Linked object') }}</label>
+                        <select-with-filter
+                            placeholder="{{ _('Select object') }}"
+                            :options="objectOptions"
+                            v-model="editDpsLink.linked_object"
+                            @changed="editDpsLink.linked_property = null; editDpsLink.linked_method = null">
+                        </select-with-filter>
+                    </div>
+                    <div class="mb-3" v-if="editDpsLink.linked_object">
+                        <label class="form-label">{{ _('Linked property') }}</label>
+                        <select-with-filter
+                            v-if="editDpsLink.linked_object in objects"
+                            placeholder="{{ _('Select property') }}"
+                            :options="objects[editDpsLink.linked_object].properties"
+                            v-model="editDpsLink.linked_property">
+                        </select-with-filter>
+                        <input v-else class="form-control" type="text"
+                               :value="editDpsLink.linked_property || ''" readonly>
+                    </div>
+                    <div class="mb-3" v-if="editDpsLink.linked_object">
+                        <label class="form-label">{{ _('Linked method') }}</label>
+                        <select-with-filter
+                            v-if="editDpsLink.linked_object in objects"
+                            placeholder="{{ _('Select method') }}"
+                            :options="objects[editDpsLink.linked_object].methods"
+                            v-model="editDpsLink.linked_method">
+                        </select-with-filter>
+                        <input v-else class="form-control" type="text"
+                               :value="editDpsLink.linked_method || ''" readonly>
+                    </div>
+                    <div class="form-check" v-if="editDps.writable && editDpsLink.linked_object">
+                        <input class="form-check-input" type="checkbox" id="editLinkReadOnly"
+                               v-model="editDpsLink.read_only">
+                        <label class="form-check-label" for="editLinkReadOnly">
+                            {{ _('Readonly') }}
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ _('Close') }}</button>
                 </div>
             </div>
         </div>
@@ -601,6 +675,8 @@ new Vue({
         deviceSaving: false,
         deviceSaveStatus: '',
         deviceSaveError: '',
+        editDps: null,
+        editDpsLink: null,
         // Translations
         translations: {
             pleaseFillRequired: '{{ _("Please fill in required fields") }}',
@@ -1067,6 +1143,15 @@ new Vue({
                 .finally(function() {
                     self.linkSaving = false;
                 });
+        },
+
+        openEditLinkModal(dps) {
+            if (!dps || !this.dpsLinks[dps.code]) {
+                return;
+            }
+            this.editDps = dps;
+            this.editDpsLink = this.dpsLinks[dps.code];
+            new bootstrap.Modal(document.getElementById('editLinkModal')).show();
         }
     }
 });

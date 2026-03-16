@@ -4,12 +4,14 @@ Integrates Tuya ecosystem devices with cloud and local control
 """
 
 import threading
+import colorsys
 from datetime import datetime
 from typing import Dict, List, Optional
 from flask import request, jsonify
 
 from app.core.main.BasePlugin import BasePlugin
 from app.core.lib.object import updateProperty, setLinkToObject
+from app.core.lib.constants import PropertyType
 from app.authentication.handlers import handle_admin_required
 from app.database import session_scope
 from plugins.Tuya.models import TuyaDevice, TuyaDeviceProperty
@@ -101,6 +103,17 @@ class Tuya(BasePlugin):
         with session_scope() as session:
             dev = session.query(TuyaDevice).filter_by(device_id=device_id).one_or_none()
             pv = self._normalize_protocol_version(info)
+            # Category reported by cloud / scan (may be unknown to our reference table)
+            reported_category = info.get('category') or (dev.category if dev else None) or 'unknown'
+            from plugins.Tuya.tuya_devices import TuyaDPSReference
+            if reported_category not in TuyaDPSReference.CATEGORY_MAPPINGS:
+                # Warning: helps to extend TuyaDPSReference with new categories seen from cloud
+                self.logger.warning(
+                    "Tuya: unknown device category from cloud/scan: device_id=%s category=%s name=%s",
+                    device_id,
+                    reported_category,
+                    info.get('name') or (dev.name if dev else None) or device_id,
+                )
             if dev:
                 dev.name = info.get('name', dev.name)
                 dev.category = info.get('category', dev.category)
@@ -252,6 +265,126 @@ class Tuya(BasePlugin):
             updated_at = now if prev is None or prev.get('value') != value else prev.get('updated_at', now)
             self._dps_cache[device_id][k] = {'value': value, 'updated_at': updated_at}
 
+    # ── DPS transformation helpers (protocol ↔ user units) ───────────────
+
+    def _get_dps_meta(self, category: str, code: str) -> dict:
+        """Return static metadata for given category/code from TuyaDPSReference."""
+        if not self.dps_ref or not category or not code:
+            return {}
+        mapping = self.dps_ref.CATEGORY_MAPPINGS.get(category, {}).get("dps", {})
+        return mapping.get(code, {})
+
+    def _from_tuya_value(self, raw_value, meta: dict):
+        """Convert raw DPS value from Tuya to user-facing value using meta (e.g. scale)."""
+        if meta is None:
+            meta = {}
+        # Special converters first (non-numeric formats)
+        converter = meta.get("converter")
+        if converter == "hsv_v2_rgb_hex" and isinstance(raw_value, str):
+            # Expect HHHHSSSSVVVV hex
+            try:
+                if len(raw_value) == 12:
+                    h = int(raw_value[0:4], 16)
+                    s = int(raw_value[4:8], 16)
+                    v = int(raw_value[8:12], 16)
+                    h_f = h / 360.0
+                    s_f = s / 1000.0
+                    v_f = v / 1000.0
+                    r_f, g_f, b_f = colorsys.hsv_to_rgb(h_f, s_f, v_f)
+                    r = int(round(r_f * 255))
+                    g = int(round(g_f * 255))
+                    b = int(round(b_f * 255))
+                    return f"{r:02X}{g:02X}{b:02X}"
+            except Exception:
+                self.logger.debug("Tuya: failed to convert HSV v2 '%s' to RGB hex", raw_value)
+
+        scale = meta.get("scale")
+        if not scale:
+            return raw_value
+        try:
+            if isinstance(raw_value, (int, float)):
+                return raw_value / scale
+            if isinstance(raw_value, str) and raw_value.replace(".", "", 1).isdigit():
+                return float(raw_value) / scale
+        except Exception:
+            self.logger.debug("Tuya: failed to apply from_tuya scale=%s to value=%s", scale, raw_value)
+        return raw_value
+
+    def _to_tuya_value(self, user_value, meta: dict):
+        """Convert user-facing value back to Tuya raw DPS (inverse of _from_tuya_value)
+        and привести тип к тому, что ожидает спецификация (PropertyType)."""
+        if meta is None:
+            meta = {}
+        # Special converters first
+        converter = meta.get("converter")
+        if converter == "hsv_v2_rgb_hex":
+            # Expect user_value as RRGGBB or #RRGGBB; convert to HHHHSSSSVVVV
+            try:
+                if isinstance(user_value, str):
+                    v = user_value.strip()
+                    if v.startswith("#"):
+                        v = v[1:]
+                    if len(v) == 6:
+                        r = int(v[0:2], 16)
+                        g = int(v[2:4], 16)
+                        b = int(v[4:6], 16)
+                        r_f = r / 255.0
+                        g_f = g / 255.0
+                        b_f = b / 255.0
+                        h_f, s_f, v_f = colorsys.rgb_to_hsv(r_f, g_f, b_f)
+                        h = int(round(h_f * 360.0))
+                        s = int(round(s_f * 1000.0))
+                        v_int = int(round(v_f * 1000.0))
+                        # Clamp to Tuya ranges
+                        h = max(0, min(360, h))
+                        s = max(0, min(1000, s))
+                        v_int = max(0, min(1000, v_int))
+                        return f"{h:04X}{s:04X}{v_int:04X}"
+            except Exception:
+                self.logger.debug("Tuya: failed to convert RGB hex '%s' to HSV v2", user_value)
+            # If conversion fails, fall through and return original / scaled value below
+
+        scale = meta.get("scale")
+        value = user_value
+
+        # 1) Сначала применяем масштаб, если он есть
+        if scale:
+            try:
+                if isinstance(value, (int, float)):
+                    value = value * scale
+                elif isinstance(value, str) and value.replace(".", "", 1).isdigit():
+                    value = float(value) * scale
+            except Exception:
+                self.logger.debug("Tuya: failed to apply to_tuya scale=%s to value=%s", scale, user_value)
+
+        # 2) Затем приводим тип к типу из спецификации (PropertyType)
+        ptype = meta.get("type")
+        try:
+            if isinstance(ptype, PropertyType):
+                if ptype == PropertyType.Bool:
+                    # Любые "0"/"1"/числа → bool
+                    if isinstance(value, str) and value.isdigit():
+                        value = bool(int(value))
+                    else:
+                        value = bool(value)
+                elif ptype == PropertyType.Integer:
+                    if isinstance(value, str) and value.replace(".", "", 1).isdigit():
+                        value = int(round(float(value)))
+                    else:
+                        value = int(round(value))
+                elif ptype == PropertyType.Float:
+                    if isinstance(value, str) and value.replace(",", ".", 1).replace(".", "", 1).isdigit():
+                        value = float(value.replace(",", ".", 1))
+                    else:
+                        value = float(value)
+                elif ptype == PropertyType.String:
+                    value = str(value)
+                # Остальные типы (Json и т.п.) оставляем как есть
+        except Exception:
+            self.logger.debug("Tuya: failed to coerce type %s for value=%s", ptype, value)
+
+        return value
+
     def _get_dps_for_display(self, device_id: str) -> Dict[str, dict]:
         """Get cached DPS for display: {str(dp_id): {value, updated_at}}."""
         with self._lock:
@@ -263,6 +396,8 @@ class Tuya(BasePlugin):
         links = self._db_get_links(device_id)
         if not links:
             return
+        dev_info = self._db_get_device(device_id)
+        category = dev_info.get("category") if dev_info else None
         for link in links:
             code = link.get('code', '')
             target_obj = link.get('linked_object')
@@ -273,8 +408,19 @@ class Tuya(BasePlugin):
             if value is None:
                 value = status.get(str(link.get('dp_id', '')))
             if value is not None:
-                self.logger.debug("_apply_status %s: %s.%s = %s (from DPS %s)", device_id, target_obj, target_prop, value, code)
-                updateProperty(f"{target_obj}.{target_prop}", value, source=self.name)
+                meta = self._get_dps_meta(category, code)
+                user_value = self._from_tuya_value(value, meta)
+                self.logger.debug(
+                    "_apply_status %s: %s.%s = %s (raw=%s, scale=%s, from DPS %s)",
+                    device_id,
+                    target_obj,
+                    target_prop,
+                    user_value,
+                    value,
+                    meta.get("scale"),
+                    code,
+                )
+                updateProperty(f"{target_obj}.{target_prop}", user_value, source=self.name)
 
     def cyclic_task(self):
         """Periodically poll device status"""
@@ -362,23 +508,35 @@ class Tuya(BasePlugin):
             self.logger.debug(f"DPS '{code}' on {device_id} is read-only, ignoring")
             return
 
-        self.logger.debug("Command: device=%s code=%s dp_id=%s value=%s (local_avail=%s, cloud_avail=%s)",
-                          device_id, code, dp_id, value,
-                          bool(self.local_client and device_id in self.local_client.devices and dp_id is not None),
-                          bool(self.cloud_client and code))
+        dev_info = self._db_get_device(device_id)
+        category = dev_info.get("category") if dev_info else None
+        meta = self._get_dps_meta(category, code)
+        tuya_value = self._to_tuya_value(value, meta)
+
+        self.logger.debug(
+            "Command: device=%s code=%s dp_id=%s value=%s -> tuya_value=%s (scale=%s, local_avail=%s, cloud_avail=%s)",
+            device_id,
+            code,
+            dp_id,
+            value,
+            tuya_value,
+            meta.get("scale"),
+            bool(self.local_client and device_id in self.local_client.devices and dp_id is not None),
+            bool(self.cloud_client and code),
+        )
 
         success = False
         method_used = None
         if self.local_client and device_id in self.local_client.devices and dp_id is not None:
             self.logger.debug("Trying local set_dp first")
-            success = self.local_client.set_dp(device_id, int(dp_id), value)
+            success = self.local_client.set_dp(device_id, int(dp_id), tuya_value)
             method_used = "local" if success else None
             if not success:
                 self.logger.debug("Local set_dp failed (see TuyaLocalClient debug), will try cloud")
 
         if not success and self.cloud_client and code:
             self.logger.debug("Trying cloud command")
-            success = self._send_cloud_command(device_id, code, value)
+            success = self._send_cloud_command(device_id, code, tuya_value)
             method_used = "cloud" if success else None
 
         if success:
@@ -386,8 +544,9 @@ class Tuya(BasePlugin):
             with self._lock:
                 self._online_fail_count[device_id] = 0
             self._set_device_online(device_id, True)
-            self._update_dps_cache_value(device_id, int(dp_id), value)
-            self._apply_status(device_id, {code: value})
+            self._update_dps_cache_value(device_id, int(dp_id), tuya_value)
+            # Re-apply status so that linked properties receive normalized value
+            self._apply_status(device_id, {code: tuya_value})
         else:
             self.logger.error("Failed to send command to %s: %s=%s (tried local=%s, cloud=%s)",
                               device_id, code, value,
@@ -825,6 +984,17 @@ class Tuya(BasePlugin):
                                 item['label'] = ref.get('label', item['code'])
                                 if not item['dp_id']:
                                     item['dp_id'] = ref.get('dp_id')
+                            else:
+                                # Cloud reports DPS that we do not have in our local reference
+                                # Log only in debug to help extend TuyaDPSReference when needed
+                                self.logger.warning(
+                                    "Tuya: unknown DPS code from cloud spec: device_id=%s category=%s code=%s dp_id=%s type=%s",
+                                    device_id,
+                                    category,
+                                    item.get('code'),
+                                    item.get('dp_id'),
+                                    item.get('type'),
+                                )
 
                 if not dps_list and self.dps_ref:
                     dps_source = 'reference'
@@ -848,12 +1018,37 @@ class Tuya(BasePlugin):
                     dps_writable = dps.get('writable', False)
                     saved_writable = s.get('writable', dps_writable)
                     dp_id = dps.get('dp_id')
+
+                    # Try to find current value for this DPS in cache
                     cached = dps_cache.get(str(dp_id)) if dp_id is not None else None
                     if cached is None and dps.get('code'):
                         cached = dps_cache.get(dps['code'])
+
+                    # Показываем только реально поддерживаемые DPS:
+                    #  - либо есть в текущем статусе устройства (cached != None),
+                    #  - либо уже есть сохранённая ссылка (чтобы не терять существующие бинды).
+                    has_saved_link = bool(
+                        s.get('linked_object') or s.get('linked_property') or s.get('linked_method')
+                    )
+                    if cached is None and not has_saved_link:
+                        continue
+
                     current_value = cached.get('value') if cached else None
                     updated_at = cached.get('updated_at') if cached else None
-                    last_changed = updated_at.isoformat() + 'Z' if hasattr(updated_at, 'isoformat') else (str(updated_at) if updated_at else None)
+                    last_changed = (
+                        updated_at.isoformat() + 'Z'
+                        if hasattr(updated_at, 'isoformat')
+                        else (str(updated_at) if updated_at else None)
+                    )
+
+                    # Предварительный просмотр того, что реально уйдёт в связанное свойство
+                    meta = self._get_dps_meta(category, dps['code'])
+                    has_transform = bool(meta.get("scale") or meta.get("converter"))
+                    if current_value is not None and has_transform:
+                        converted_value = self._from_tuya_value(current_value, meta)
+                    else:
+                        converted_value = None
+
                     dps_with_links.append({
                         'code': dps['code'],
                         'dp_id': dp_id,
@@ -865,8 +1060,34 @@ class Tuya(BasePlugin):
                         'linked_method': s.get('linked_method', ''),
                         'read_only': dps_writable and not saved_writable,
                         'current_value': current_value,
+                        'converted_value': converted_value,
                         'last_changed': last_changed,
                     })
+
+                # Если после фильтрации по статусу/ссылкам ничего не осталось,
+                # всё равно отдадим все DPS из списка, чтобы можно было создать линк.
+                if not dps_with_links and dps_list:
+                    for dps in dps_list:
+                        s = saved.get(dps['code'], {})
+                        dps_writable = dps.get('writable', False)
+                        saved_writable = s.get('writable', dps_writable)
+                        dp_id = dps.get('dp_id')
+                        meta = self._get_dps_meta(category, dps['code'])
+                        has_transform = bool(meta.get("scale") or meta.get("converter"))
+                        dps_with_links.append({
+                            'code': dps['code'],
+                            'dp_id': dp_id,
+                            'type': dps.get('type', ''),
+                            'writable': dps_writable,
+                            'label': dps.get('label', dps['code']),
+                            'linked_object': s.get('linked_object', ''),
+                            'linked_property': s.get('linked_property', ''),
+                            'linked_method': s.get('linked_method', ''),
+                            'read_only': dps_writable and not saved_writable,
+                            'current_value': None,
+                            'converted_value': None if not has_transform else '',
+                            'last_changed': None,
+                        })
 
                 category_label = ''
                 if self.dps_ref:

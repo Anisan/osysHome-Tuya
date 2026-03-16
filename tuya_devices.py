@@ -26,11 +26,19 @@ class TuyaDPSReference:
                 "switch_led":       {"type": PropertyType.Bool,    "dp_id": 20, "writable": True,  "label": "On/Off"},
                 "work_mode":        {"type": PropertyType.String,  "dp_id": 21, "writable": True,  "label": "Mode (white/colour/scene/music)"},
                 "bright_value":     {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness v1 (25-255)"},
-                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness v2 (10-1000)"},
+                # v2 uses 10–1000 range which maps to 1–100% for user-facing value
+                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness v2 (10-1000)", "scale": 10},
                 "temp_value":       {"type": PropertyType.Integer, "dp_id": 23, "writable": True,  "label": "Color Temp v1 (0-255)"},
                 "temp_value_v2":    {"type": PropertyType.Integer, "dp_id": 23, "writable": True,  "label": "Color Temp v2 (0-1000)"},
                 "colour_data":      {"type": PropertyType.String,  "dp_id": 24, "writable": True,  "label": "Colour HSV data v1"},
-                "colour_data_v2":   {"type": PropertyType.String,  "dp_id": 24, "writable": True,  "label": "Colour HSV data v2"},
+                # Tuya HSV v2 packed as HHHHSSSSVVVV (hex) → convert to RRGGBB for linked properties
+                "colour_data_v2":   {
+                    "type": PropertyType.String,
+                    "dp_id": 24,
+                    "writable": True,
+                    "label": "Colour HSV data v2",
+                    "converter": "hsv_v2_rgb_hex",
+                },
                 "scene_data":       {"type": PropertyType.String,  "dp_id": 25, "writable": True,  "label": "Scene data v1"},
                 "scene_data_v2":    {"type": PropertyType.String,  "dp_id": 25, "writable": True,  "label": "Scene data v2"},
                 "flash_scene_1":    {"type": PropertyType.String,  "dp_id": 26, "writable": True,  "label": "Soft light mode"},
@@ -51,7 +59,7 @@ class TuyaDPSReference:
             "dps": {
                 "switch_led":       {"type": PropertyType.Bool,    "dp_id": 20, "writable": True,  "label": "On/Off"},
                 "work_mode":        {"type": PropertyType.String,  "dp_id": 21, "writable": True,  "label": "Mode"},
-                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)"},
+                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)", "scale": 10},
                 "temp_value_v2":    {"type": PropertyType.Integer, "dp_id": 23, "writable": True,  "label": "Color Temp (0-1000)"},
                 "scene_data_v2":    {"type": PropertyType.String,  "dp_id": 25, "writable": True,  "label": "Scene data"},
                 "countdown_1":      {"type": PropertyType.Integer, "dp_id": 26, "writable": True,  "label": "Countdown (s)"},
@@ -65,9 +73,15 @@ class TuyaDPSReference:
             "dps": {
                 "switch_led":       {"type": PropertyType.Bool,    "dp_id": 20, "writable": True,  "label": "On/Off"},
                 "work_mode":        {"type": PropertyType.String,  "dp_id": 21, "writable": True,  "label": "Mode"},
-                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)"},
+                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)", "scale": 10},
                 "temp_value_v2":    {"type": PropertyType.Integer, "dp_id": 23, "writable": True,  "label": "Color Temp (0-1000)"},
-                "colour_data_v2":   {"type": PropertyType.String,  "dp_id": 24, "writable": True,  "label": "Colour HSV data"},
+                "colour_data_v2":   {
+                    "type": PropertyType.String,
+                    "dp_id": 24,
+                    "writable": True,
+                    "label": "Colour HSV data",
+                    "converter": "hsv_v2_rgb_hex",
+                },
                 "scene_data_v2":    {"type": PropertyType.String,  "dp_id": 25, "writable": True,  "label": "Scene data"},
                 "countdown_1":      {"type": PropertyType.Integer, "dp_id": 26, "writable": True,  "label": "Countdown (s)"},
                 "music_data":       {"type": PropertyType.String,  "dp_id": 27, "writable": True,  "label": "Music light control"},
@@ -78,7 +92,7 @@ class TuyaDPSReference:
             "dps": {
                 "switch_led":       {"type": PropertyType.Bool,    "dp_id": 20, "writable": True,  "label": "On/Off"},
                 "work_mode":        {"type": PropertyType.String,  "dp_id": 21, "writable": True,  "label": "Mode"},
-                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)"},
+                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)", "scale": 10},
                 "scene_data_v2":    {"type": PropertyType.String,  "dp_id": 25, "writable": True,  "label": "Scene data"},
             },
         },
@@ -87,9 +101,15 @@ class TuyaDPSReference:
             "dps": {
                 "switch_led":       {"type": PropertyType.Bool,    "dp_id": 20, "writable": True,  "label": "On/Off"},
                 "work_mode":        {"type": PropertyType.String,  "dp_id": 21, "writable": True,  "label": "Mode"},
-                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)"},
+                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)", "scale": 10},
                 "temp_value_v2":    {"type": PropertyType.Integer, "dp_id": 23, "writable": True,  "label": "Color Temp (0-1000)"},
-                "colour_data_v2":   {"type": PropertyType.String,  "dp_id": 24, "writable": True,  "label": "Colour HSV data"},
+                "colour_data_v2":   {
+                    "type": PropertyType.String,
+                    "dp_id": 24,
+                    "writable": True,
+                    "label": "Colour HSV data",
+                    "converter": "hsv_v2_rgb_hex",
+                },
                 "scene_data_v2":    {"type": PropertyType.String,  "dp_id": 25, "writable": True,  "label": "Scene data"},
                 "music_data":       {"type": PropertyType.String,  "dp_id": 27, "writable": True,  "label": "Music light control"},
             },
@@ -99,7 +119,7 @@ class TuyaDPSReference:
             "dps": {
                 "switch_led":       {"type": PropertyType.Bool,    "dp_id": 20, "writable": True,  "label": "On/Off"},
                 "work_mode":        {"type": PropertyType.String,  "dp_id": 21, "writable": True,  "label": "Mode"},
-                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)"},
+                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)", "scale": 10},
                 "temp_value_v2":    {"type": PropertyType.Integer, "dp_id": 23, "writable": True,  "label": "Color Temp (0-1000)"},
                 "standby_bright":   {"type": PropertyType.Integer, "dp_id": 44, "writable": True,  "label": "Standby brightness"},
                 "pir_sensitivity":  {"type": PropertyType.String,  "dp_id": 43, "writable": True,  "label": "PIR sensitivity"},
@@ -112,7 +132,7 @@ class TuyaDPSReference:
             "dps": {
                 "switch_led":       {"type": PropertyType.Bool,    "dp_id": 20, "writable": True,  "label": "Light On/Off"},
                 "work_mode":        {"type": PropertyType.String,  "dp_id": 21, "writable": True,  "label": "Light Mode"},
-                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)"},
+                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)", "scale": 10},
                 "temp_value_v2":    {"type": PropertyType.Integer, "dp_id": 23, "writable": True,  "label": "Color Temp (0-1000)"},
                 "fan_switch":       {"type": PropertyType.Bool,    "dp_id": 1,  "writable": True,  "label": "Fan On/Off"},
                 "fan_speed":        {"type": PropertyType.Integer, "dp_id": 3,  "writable": True,  "label": "Fan Speed"},
@@ -124,19 +144,25 @@ class TuyaDPSReference:
             "dps": {
                 "switch_led":       {"type": PropertyType.Bool,    "dp_id": 20, "writable": True,  "label": "On/Off"},
                 "work_mode":        {"type": PropertyType.String,  "dp_id": 21, "writable": True,  "label": "Mode"},
-                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)"},
-                "colour_data_v2":   {"type": PropertyType.String,  "dp_id": 24, "writable": True,  "label": "Colour HSV data"},
+                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)", "scale": 10},
+                "colour_data_v2":   {
+                    "type": PropertyType.String,
+                    "dp_id": 24,
+                    "writable": True,
+                    "label": "Colour HSV data",
+                    "converter": "hsv_v2_rgb_hex",
+                },
             },
         },
         "tgq": {
             "label": "Dimmer",
             "dps": {
                 "switch_led_1":     {"type": PropertyType.Bool,    "dp_id": 1,  "writable": True,  "label": "Dimmer 1 On/Off"},
-                "bright_value_1":   {"type": PropertyType.Integer, "dp_id": 2,  "writable": True,  "label": "Dimmer 1 Brightness (10-1000)"},
+                "bright_value_1":   {"type": PropertyType.Integer, "dp_id": 2,  "writable": True,  "label": "Dimmer 1 Brightness (10-1000)", "scale": 10},
                 "brightness_min_1": {"type": PropertyType.Integer, "dp_id": 3,  "writable": True,  "label": "Dimmer 1 Min Brightness"},
                 "led_type_1":       {"type": PropertyType.String,  "dp_id": 4,  "writable": True,  "label": "Dimmer 1 LED Type"},
                 "switch_led_2":     {"type": PropertyType.Bool,    "dp_id": 5,  "writable": True,  "label": "Dimmer 2 On/Off"},
-                "bright_value_2":   {"type": PropertyType.Integer, "dp_id": 6,  "writable": True,  "label": "Dimmer 2 Brightness (10-1000)"},
+                "bright_value_2":   {"type": PropertyType.Integer, "dp_id": 6,  "writable": True,  "label": "Dimmer 2 Brightness (10-1000)", "scale": 10},
             },
         },
         "sxd": {
@@ -144,9 +170,15 @@ class TuyaDPSReference:
             "dps": {
                 "switch_led":       {"type": PropertyType.Bool,    "dp_id": 20, "writable": True,  "label": "On/Off"},
                 "work_mode":        {"type": PropertyType.String,  "dp_id": 21, "writable": True,  "label": "Mode"},
-                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)"},
+                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness (10-1000)", "scale": 10},
                 "temp_value_v2":    {"type": PropertyType.Integer, "dp_id": 23, "writable": True,  "label": "Color Temp (0-1000)"},
-                "colour_data_v2":   {"type": PropertyType.String,  "dp_id": 24, "writable": True,  "label": "Colour HSV data"},
+                "colour_data_v2":   {
+                    "type": PropertyType.String,
+                    "dp_id": 24,
+                    "writable": True,
+                    "label": "Colour HSV data",
+                    "converter": "hsv_v2_rgb_hex",
+                },
             },
         },
         "ykq": {
@@ -154,7 +186,7 @@ class TuyaDPSReference:
             "dps": {
                 "switch_led":       {"type": PropertyType.Bool,    "dp_id": 20, "writable": True,  "label": "On/Off"},
                 "work_mode":        {"type": PropertyType.String,  "dp_id": 21, "writable": True,  "label": "Mode"},
-                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness"},
+                "bright_value_v2":  {"type": PropertyType.Integer, "dp_id": 22, "writable": True,  "label": "Brightness", "scale": 10},
                 "temp_value_v2":    {"type": PropertyType.Integer, "dp_id": 23, "writable": True,  "label": "Color Temp"},
             },
         },
@@ -193,8 +225,9 @@ class TuyaDPSReference:
                 "countdown_1":      {"type": PropertyType.Integer, "dp_id": 9,  "writable": True,  "label": "Countdown 1 (s)"},
                 "countdown_2":      {"type": PropertyType.Integer, "dp_id": 10, "writable": True,  "label": "Countdown 2 (s)"},
                 "cur_current":      {"type": PropertyType.Integer, "dp_id": 18, "writable": False, "label": "Current (mA)"},
-                "cur_power":        {"type": PropertyType.Integer, "dp_id": 19, "writable": False, "label": "Power (0.1 W)"},
-                "cur_voltage":      {"type": PropertyType.Integer, "dp_id": 20, "writable": False, "label": "Voltage (0.1 V)"},
+                # Power and voltage are reported with 0.1 scale, convert to real units for UI
+                "cur_power":        {"type": PropertyType.Integer, "dp_id": 19, "writable": False, "label": "Power (0.1 W)", "scale": 10},
+                "cur_voltage":      {"type": PropertyType.Integer, "dp_id": 20, "writable": False, "label": "Voltage (0.1 V)", "scale": 10},
                 "child_lock":       {"type": PropertyType.Bool,    "dp_id": 13, "writable": True,  "label": "Child Lock"},
                 "relay_status":     {"type": PropertyType.String,  "dp_id": 14, "writable": True,  "label": "Power-on State"},
                 "switch_backlight": {"type": PropertyType.Bool,    "dp_id": 16, "writable": True,  "label": "Backlight"},
@@ -218,8 +251,8 @@ class TuyaDPSReference:
                 "countdown_2":      {"type": PropertyType.Integer, "dp_id": 12, "writable": True,  "label": "Countdown 2 (s)"},
                 "countdown_usb1":   {"type": PropertyType.Integer, "dp_id": 15, "writable": True,  "label": "USB 1 Countdown (s)"},
                 "cur_current":      {"type": PropertyType.Integer, "dp_id": 18, "writable": False, "label": "Current (mA)"},
-                "cur_power":        {"type": PropertyType.Integer, "dp_id": 19, "writable": False, "label": "Power (0.1 W)"},
-                "cur_voltage":      {"type": PropertyType.Integer, "dp_id": 20, "writable": False, "label": "Voltage (0.1 V)"},
+                "cur_power":        {"type": PropertyType.Integer, "dp_id": 19, "writable": False, "label": "Power (0.1 W)", "scale": 10},
+                "cur_voltage":      {"type": PropertyType.Integer, "dp_id": 20, "writable": False, "label": "Voltage (0.1 V)", "scale": 10},
                 "child_lock":       {"type": PropertyType.Bool,    "dp_id": 13, "writable": True,  "label": "Child Lock"},
             },
         },
@@ -247,10 +280,10 @@ class TuyaDPSReference:
             "label": "Dimmer Switch",
             "dps": {
                 "switch_led_1":     {"type": PropertyType.Bool,    "dp_id": 1,  "writable": True,  "label": "Switch 1"},
-                "bright_value_1":   {"type": PropertyType.Integer, "dp_id": 2,  "writable": True,  "label": "Brightness 1 (10-1000)"},
+                "bright_value_1":   {"type": PropertyType.Integer, "dp_id": 2,  "writable": True,  "label": "Brightness 1 (10-1000)", "scale": 10},
                 "brightness_min_1": {"type": PropertyType.Integer, "dp_id": 3,  "writable": True,  "label": "Min Brightness 1"},
                 "switch_led_2":     {"type": PropertyType.Bool,    "dp_id": 5,  "writable": True,  "label": "Switch 2"},
-                "bright_value_2":   {"type": PropertyType.Integer, "dp_id": 6,  "writable": True,  "label": "Brightness 2 (10-1000)"},
+                "bright_value_2":   {"type": PropertyType.Integer, "dp_id": 6,  "writable": True,  "label": "Brightness 2 (10-1000)", "scale": 10},
             },
         },
         "clkg": {
@@ -686,7 +719,7 @@ class TuyaDPSReference:
                 "reverse_energy_total":  {"type": PropertyType.Integer, "dp_id": 2,  "writable": False, "label": "Total Reverse Energy (kWh)"},
                 "phase_a_current":       {"type": PropertyType.Integer, "dp_id": 6,  "writable": False, "label": "Phase A Current (mA)"},
                 "phase_a_power":         {"type": PropertyType.Integer, "dp_id": 7,  "writable": False, "label": "Phase A Power (W)"},
-                "phase_a_voltage":       {"type": PropertyType.Integer, "dp_id": 8,  "writable": False, "label": "Phase A Voltage (0.1V)"},
+                "phase_a_voltage":       {"type": PropertyType.Integer, "dp_id": 8,  "writable": False, "label": "Phase A Voltage (0.1V)", "scale": 10},
             },
         },
 
@@ -715,6 +748,11 @@ class TuyaDPSReference:
         """
         mapping = self.CATEGORY_MAPPINGS.get(category)
         if not mapping:
+            # Category not present in reference mapping – useful to see in debug
+            self.logger.warning(
+                "TuyaDPSReference: unknown category '%s' requested for DPS mapping",
+                category,
+            )
             return []
         result = []
         for code, info in mapping.get('dps', {}).items():
