@@ -24,11 +24,18 @@ class TuyaLocalClient:
         self._device_configs: Dict[str, Dict] = {}
         self.socket_timeout = 8
         self.retryable_errors = {"904", "905", "914"}
+        # Some Tuya firmwares return stale DPS over long-lived sockets.
+        # Default to non-persistent sockets for fresher status reads.
+        self.socket_persistent = False
+        # Heuristic: if the full DPS dict repeats N times, force a reconnect and retry once.
+        self.stale_repeat_threshold = 3
+        self._last_dps: Dict[str, Dict[str, Any]] = {}
+        self._repeat_count: Dict[str, int] = {}
 
     def _create_device(self, device_id: str, ip: str, local_key: str, version: str) -> tinytuya.Device:
         """Create a configured tinytuya device instance."""
         device = tinytuya.Device(device_id, ip, local_key, version=version)
-        device.set_socketPersistent(True)
+        device.set_socketPersistent(bool(self.socket_persistent))
         device.set_socketTimeout(self.socket_timeout)
         return device
 
@@ -200,6 +207,42 @@ class TuyaLocalClient:
                 return {}
             
             dps = status['dps']
+            # B) Stale-DPS mitigation: if the device keeps returning the exact same DPS
+            # for multiple polls, reconnect and try once to refresh.
+            try:
+                prev_dps = self._last_dps.get(device_id)
+                if prev_dps is not None and dps == prev_dps:
+                    self._repeat_count[device_id] = self._repeat_count.get(device_id, 0) + 1
+                else:
+                    self._repeat_count[device_id] = 0
+                self._last_dps[device_id] = dict(dps) if isinstance(dps, dict) else dps
+
+                if self._repeat_count.get(device_id, 0) >= int(self.stale_repeat_threshold):
+                    self.logger.debug(
+                        "get_status %s: DPS repeated %d times; forcing reconnect to refresh",
+                        device_id,
+                        self._repeat_count[device_id],
+                    )
+                    device = self._reconnect_device(device_id)
+                    if device:
+                        try:
+                            refreshed = device.status()
+                        except Exception as e:
+                            refreshed = {"Error": str(e), "Err": "exception", "Payload": None}
+                        if refreshed and isinstance(refreshed, dict) and 'dps' in refreshed:
+                            dps2 = refreshed['dps']
+                            self.logger.debug(
+                                "get_status %s: refreshed DPS after reconnect: %s",
+                                device_id,
+                                dps2,
+                            )
+                            dps = dps2
+                            self._last_dps[device_id] = dict(dps2) if isinstance(dps2, dict) else dps2
+                            self._repeat_count[device_id] = 0
+            except Exception:
+                # Never break polling because of stale mitigation bookkeeping.
+                pass
+
             self.logger.debug(
                 "get_status %s: success in %.3fs on attempt %d, dps=%s (full: %s)",
                 device_id,
