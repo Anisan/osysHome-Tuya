@@ -4,11 +4,13 @@ Integrates Tuya ecosystem devices with cloud and local control
 """
 
 import threading
+import time
 import colorsys
 from datetime import datetime
 from typing import Dict, List, Optional
 from flask import request, jsonify
 
+from app.core.MonitoredThreadPool import MonitoredThreadPool
 from app.core.main.BasePlugin import BasePlugin
 from app.core.lib.object import updateProperty, setLinkToObject
 from app.core.lib.constants import PropertyType
@@ -39,6 +41,12 @@ class Tuya(BasePlugin):
         self.local_client: Optional[TuyaLocalClient] = None
         self.dps_ref: Optional[TuyaDPSReference] = None
         self._lock = threading.Lock()
+        self._cloud_poll_lock = threading.Lock()
+        self._poll_workers = max(2, int(self.config.get('poll_workers', 4) or 4))
+        self._poll_pool = MonitoredThreadPool(
+            max_workers=self._poll_workers,
+            thread_name_prefix=f"{self.name}_poll",
+        )
         # In-memory DPS cache: {device_id: {str(dp_id): {'value': v, 'updated_at': datetime}}}
         self._dps_cache: Dict[str, Dict[str, dict]] = {}
         # Fail counter for online hysteresis: mark offline only after N consecutive poll failures
@@ -426,37 +434,70 @@ class Tuya(BasePlugin):
         """Periodically poll device status"""
         poll_interval = self.config.get('poll_interval', 30)
         while not self.event.is_set():
+            started_at = time.monotonic()
+            polled_devices = 0
             try:
-                self._poll_devices()
+                polled_devices = self._poll_devices()
             except Exception as e:
                 self.logger.error(f"Error in cyclic task: {e}")
-            self.event.wait(poll_interval)
+            elapsed = time.monotonic() - started_at
+            self.logger.debug(
+                "Poll cycle complete: devices=%d elapsed=%.3fs interval=%.3fs",
+                polled_devices,
+                elapsed,
+                float(poll_interval),
+            )
+            self.event.wait(max(0.0, poll_interval - elapsed))
     
     def _poll_devices(self):
+        started_at = time.monotonic()
         devices = self._db_get_all_devices()
-        for dev in devices:
-            if dev.get('enabled', True):
-                try:
-                    self._poll_device(dev)
-                except Exception as e:
-                    self.logger.error(f"Error polling device {dev['id']}: {e}")
+        enabled_devices = [dev for dev in devices if dev.get('enabled', True)]
+        if not enabled_devices:
+            self.logger.debug("Poll batch: no enabled devices")
+            return 0
 
-    def _poll_device(self, dev: dict):
-        device_id = dev['id']
-        status = {}
-        source = None
+        if len(enabled_devices) == 1:
+            dev = enabled_devices[0]
+            try:
+                self._poll_device(dev)
+            except Exception as e:
+                self.logger.error(f"Error polling device {dev['id']}: {e}")
+            elapsed = time.monotonic() - started_at
+            self.logger.debug("Poll batch: devices=1 mode=serial elapsed=%.3fs", elapsed)
+            return 1
 
-        if self.local_client and device_id in self.local_client.devices:
-            status = self.local_client.get_status(device_id)
-            source = "local" if status else None
-            if not status:
-                self.logger.debug("Poll %s: local returned empty, trying cloud", device_id)
+        future_to_device = {}
+        for dev in enabled_devices:
+            try:
+                future = self._poll_pool.submit(self._poll_device, f"poll_{dev['id']}", dev)
+                future_to_device[future] = dev['id']
+            except Exception as e:
+                self.logger.error("Failed to submit poll task for %s: %s", dev['id'], e)
 
-        if not status and self.cloud_client:
-            status = self.cloud_client.get_device_status(device_id)
-            source = "cloud" if status else None
+        for future, device_id in future_to_device.items():
+            try:
+                future.result()
+            except Exception as e:
+                self.logger.error("Error polling device %s: %s", device_id, e)
 
-        # Hysteresis: don't flip offline on first failure; require consecutive failures
+        self.logger.debug(
+            "Poll batch: devices=%d mode=parallel workers=%d elapsed=%.3fs",
+            len(enabled_devices),
+            self._poll_workers,
+            time.monotonic() - started_at,
+        )
+        return len(enabled_devices)
+
+    def _get_cloud_status(self, device_id: str) -> Dict:
+        """Serialize cloud fallback calls because the cloud client is shared across poll workers."""
+        if not self.cloud_client:
+            return {}
+        with self._cloud_poll_lock:
+            return self.cloud_client.get_device_status(device_id)
+
+    def _handle_poll_result(self, device_id: str, source: Optional[str], status: Dict):
+        """Apply online hysteresis and propagate status after a poll attempt."""
         got_status = bool(status)
         with self._lock:
             if got_status:
@@ -475,6 +516,66 @@ class Tuya(BasePlugin):
 
         if status:
             self._apply_status(device_id, status)
+
+    def _poll_device_local(self, device_id: str) -> Dict:
+        """Get local device status if local polling is available for this device."""
+        if self.local_client and device_id in self.local_client.devices:
+            status = self.local_client.get_status(device_id)
+            if not status:
+                self.logger.debug("Poll %s: local returned empty, trying cloud", device_id)
+            return status
+        return {}
+
+    def _poll_device_cloud(self, device_id: str) -> Dict:
+        """Get cloud status for a device as fallback or primary source."""
+        return self._get_cloud_status(device_id) if self.cloud_client else {}
+
+    def _poll_device_status(self, device_id: str) -> tuple[Dict, Optional[str]]:
+        """Poll device status and return both payload and source."""
+        started_at = time.monotonic()
+        local_status = self._poll_device_local(device_id)
+        if local_status:
+            self.logger.debug(
+                "Poll %s: local status ready in %.3fs",
+                device_id,
+                time.monotonic() - started_at,
+            )
+            return local_status, "local"
+
+        local_elapsed = time.monotonic() - started_at
+        cloud_status = self._poll_device_cloud(device_id)
+        if cloud_status:
+            self.logger.debug(
+                "Poll %s: cloud fallback ready in %.3fs (local_wait=%.3fs)",
+                device_id,
+                time.monotonic() - started_at,
+                local_elapsed,
+            )
+            return cloud_status, "cloud"
+        self.logger.debug(
+            "Poll %s: no status after %.3fs (local_wait=%.3fs)",
+            device_id,
+            time.monotonic() - started_at,
+            local_elapsed,
+        )
+        return {}, None
+
+    def _poll_device_error(self, device_id: str, e: Exception):
+        """Log unexpected poll errors and update offline hysteresis."""
+        self.logger.error("Error polling device %s: %s", device_id, e)
+        self._handle_poll_result(device_id, None, {})
+
+    def _poll_device_wrapper(self, dev: dict):
+        """Poll one device and safely apply the result."""
+        device_id = dev['id']
+        try:
+            status, source = self._poll_device_status(device_id)
+            self._handle_poll_result(device_id, source, status)
+        except Exception as e:
+            self._poll_device_error(device_id, e)
+
+    def _poll_device(self, dev: dict):
+        self._poll_device_wrapper(dev)
 
     # ── Linked property handling ────────────────────────────────────────
 
@@ -1129,8 +1230,10 @@ class Tuya(BasePlugin):
     # ── Helpers ──────────────────────────────────────────────────────────
 
     def stop_cycle(self):
+        super().stop_cycle()
         if self.cloud_client:
             self.cloud_client.disconnect()
         if self.local_client:
             self.local_client.close_all()
-        super().stop_cycle()
+        if self._poll_pool:
+            self._poll_pool.shutdown(wait=True)

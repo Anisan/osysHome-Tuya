@@ -1,5 +1,14 @@
 # Плагин Tuya — Начало работы
 
+## Дополнительные материалы
+
+После первого запуска используйте:
+
+- `index.ru.md` — обзор модуля и терминов
+- `Setup.ru.md` — подробная настройка режимов подключения и ключей
+- `DevicesAndDPS.ru.md` — работа с устройствами, категориями и DPS
+- `Troubleshooting.ru.md` — типовые ошибки и способы диагностики
+
 ## Предварительные требования
 
 - Аккаунт в приложении [Tuya Smart](https://play.google.com/store/apps/details?id=com.tuya.smart) или [Smart Life](https://play.google.com/store/apps/details?id=com.tuya.smartlife)
@@ -11,7 +20,7 @@
 1. Перейдите на **https://iot.tuya.com/** и зарегистрируйтесь (или войдите)
 2. В меню слева: **Cloud** → **Development** → **Create Cloud Project**
 3. Заполните:
-   - **Project Name** — любое имя (например `NextGetSmart`)
+   - **Project Name** — любое имя (например `osysHome`)
    - **Industry** — Smart Home
    - **Development Method** — Smart Home
    - **Data Center** — выберите ваш регион:
@@ -52,7 +61,7 @@
 
 ## Шаг 5 — Настройте плагин
 
-1. Откройте страницу администрирования плагина Tuya в NextGetSmart
+1. Откройте страницу администрирования плагина Tuya в osysHome
 2. Нажмите кнопку **Настройки** (иконка шестерёнки)
 3. Введите:
    - **Access ID** — из Шага 2

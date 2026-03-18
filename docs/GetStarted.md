@@ -1,5 +1,14 @@
 # Tuya Plugin — Getting Started
 
+## Additional reading
+
+After the first successful setup, continue with:
+
+- `index.md` — module overview and key terms
+- `Setup.md` — detailed setup for connection modes and keys
+- `DevicesAndDPS.md` — devices, categories, and DPS binding
+- `Troubleshooting.md` — common errors and diagnostic steps
+
 ## Prerequisites
 
 - Account in [Tuya Smart](https://play.google.com/store/apps/details?id=com.tuya.smart) or [Smart Life](https://play.google.com/store/apps/details?id=com.tuya.smartlife) app
@@ -11,7 +20,7 @@
 1. Go to **https://iot.tuya.com/** and register (or log in)
 2. In the left menu: **Cloud** → **Development** → **Create Cloud Project**
 3. Fill in:
-   - **Project Name** — any name (e.g. `NextGetSmart`)
+   - **Project Name** — any name (e.g. `osysHome`)
    - **Industry** — Smart Home
    - **Development Method** — Smart Home
    - **Data Center** — choose your region:
@@ -52,7 +61,7 @@ If they are not listed, click **Add Authorization** and search for them.
 
 ## Step 5 — Configure the Plugin
 
-1. Open the Tuya plugin admin page in NextGetSmart
+1. Open the Tuya plugin admin page in osysHome
 2. Click the **Settings** (gear icon) button
 3. Enter:
    - **Access ID** — from Step 2

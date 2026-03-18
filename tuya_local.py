@@ -4,6 +4,7 @@ Uses tinytuya for direct device communication without cloud
 """
 
 import logging
+import time
 import tinytuya
 from typing import Dict, Optional, List, Any
 
@@ -21,6 +22,66 @@ class TuyaLocalClient:
         self.logger = logger or logging.getLogger(__name__)
         self.devices: Dict[str, tinytuya.Device] = {}
         self._device_configs: Dict[str, Dict] = {}
+        self.socket_timeout = 8
+        self.retryable_errors = {"904", "905", "914"}
+
+    def _create_device(self, device_id: str, ip: str, local_key: str, version: str) -> tinytuya.Device:
+        """Create a configured tinytuya device instance."""
+        device = tinytuya.Device(device_id, ip, local_key, version=version)
+        device.set_socketPersistent(True)
+        device.set_socketTimeout(self.socket_timeout)
+        return device
+
+    def _close_device(self, device_id: str):
+        """Close active socket for a device if present."""
+        device = self.devices.get(device_id)
+        if not device:
+            return
+        try:
+            device.close()
+        except Exception:
+            pass
+
+    def _is_retryable_error(self, result: Any) -> bool:
+        """Return True for transient tinytuya errors that benefit from reconnect."""
+        if not isinstance(result, dict):
+            return False
+        err = str(result.get("Err") or "").strip()
+        if err in self.retryable_errors:
+            return True
+        error_text = str(result.get("Error") or "").lower()
+        return any(code in error_text for code in ("unexpected payload", "device unreachable", "check device key or version"))
+
+    def _log_device_failure(self, action: str, device_id: str, detail: Any, *, retryable: bool = False):
+        """Log transient device failures as debug and unexpected ones as warning."""
+        log_fn = self.logger.debug if retryable else self.logger.warning
+        log_fn("%s %s failed: %s", action, device_id, detail)
+
+    def _reconnect_device(self, device_id: str) -> Optional[tinytuya.Device]:
+        """Recreate the tinytuya device to recover from stale/broken sockets."""
+        config = self._device_configs.get(device_id)
+        if not config:
+            return None
+        self._close_device(device_id)
+        try:
+            device = self._create_device(
+                device_id,
+                config["ip"],
+                config["local_key"],
+                config["version"],
+            )
+            self.devices[device_id] = device
+            self.logger.debug(
+                "Reconnected local device %s at %s (protocol=%s)",
+                device_id,
+                config["ip"],
+                config["version"],
+            )
+            return device
+        except Exception as e:
+            self.logger.warning("Failed to reconnect local device %s: %s", device_id, e)
+            self.devices.pop(device_id, None)
+            return None
         
     def add_device(self, device_id: str, ip: str, local_key: str, version: str = "3.3") -> bool:
         """
@@ -36,31 +97,25 @@ class TuyaLocalClient:
             True if device added successfully
         """
         try:
-            device = tinytuya.Device(device_id, ip, local_key, version=version)
-            device.set_socketPersistent(True)
-            device.set_socketTimeout(5)
-            
-            self.devices[device_id] = device
             self._device_configs[device_id] = {
                 "ip": ip,
                 "local_key": local_key,
                 "version": version
             }
+            self._close_device(device_id)
+            self.devices[device_id] = self._create_device(device_id, ip, local_key, version)
             
             self.logger.info("Added local device %s at %s (protocol=%s)", device_id, ip, version)
             return True
             
         except Exception as e:
-            self.logger.error(f"Failed to add device {device_id}: {e}")
+            self.logger.error("Failed to add device %s: %s", device_id, e)
             return False
     
     def remove_device(self, device_id: str):
         """Remove device from local control"""
         if device_id in self.devices:
-            try:
-                self.devices[device_id].close()
-            except:
-                pass
+            self._close_device(device_id)
             del self.devices[device_id]
             
         if device_id in self._device_configs:
@@ -100,25 +155,63 @@ class TuyaLocalClient:
         """
         device = self.devices.get(device_id)
         if not device:
-            self.logger.error(f"Device {device_id} not found in local client")
+            self.logger.error("Device %s not found in local client", device_id)
             return {}
         
-        try:
-            status = device.status()
-            
+        started_at = time.monotonic()
+        for attempt in range(2):
+            attempt_started_at = time.monotonic()
+            try:
+                status = device.status()
+            except Exception as e:
+                self._log_device_failure(
+                    f"get_status attempt {attempt + 1}",
+                    device_id,
+                    e,
+                    retryable=(attempt == 0),
+                )
+                status = {"Error": str(e), "Err": "exception", "Payload": None}
+            attempt_elapsed = time.monotonic() - attempt_started_at
+
             if not status or 'dps' not in status:
-                self.logger.warning("get_status %s: no DPS, raw response: %s", device_id, status)
+                retryable = self._is_retryable_error(status)
+                if attempt == 0 and retryable:
+                    self.logger.debug(
+                        "get_status %s: retrying after transient error in %.3fs: %s",
+                        device_id,
+                        attempt_elapsed,
+                        status,
+                    )
+                    device = self._reconnect_device(device_id)
+                    if device:
+                        continue
+                self._log_device_failure(
+                    "get_status",
+                    device_id,
+                    f"no DPS, raw response: {status}",
+                    retryable=retryable,
+                )
+                self.logger.debug(
+                    "get_status %s: finished without DPS in %.3fs after %d attempt(s)",
+                    device_id,
+                    time.monotonic() - started_at,
+                    attempt + 1,
+                )
                 return {}
             
             dps = status['dps']
-            self.logger.debug("get_status %s: dps=%s (full: %s)", device_id, dps, status)
+            self.logger.debug(
+                "get_status %s: success in %.3fs on attempt %d, dps=%s (full: %s)",
+                device_id,
+                time.monotonic() - started_at,
+                attempt + 1,
+                dps,
+                status,
+            )
             return dps
-            
-        except Exception as e:
-            self.logger.error(f"Error getting status for {device_id}: {e}")
-            return {}
+        return {}
     
-    def _normalize_dp_value(self, value: Any, dp_id: int = None) -> Any:
+    def _normalize_dp_value(self, value: Any, _dp_id: int = None) -> Any:
         """
         Normalize value for Tuya protocol.
         Switch DPS often expect bool (True/False), not int 0/1 — especially for protocol 3.4+.
@@ -143,7 +236,7 @@ class TuyaLocalClient:
         """
         device = self.devices.get(device_id)
         if not device:
-            self.logger.error(f"Device {device_id} not found in local client")
+            self.logger.error("Device %s not found in local client", device_id)
             return False
         
         # Normalize switch/boolean values — Tuya 3.4+ often expects bool
@@ -152,8 +245,21 @@ class TuyaLocalClient:
             self.logger.debug("set_dp %s dp=%s: normalized value %s -> bool %s",
                               device_id, dp_id, value, normalized)
         
-        try:
-            result = device.set_value(dp_id, normalized)
+        for attempt in range(2):
+            if attempt > 0:
+                device = self.devices.get(device_id)
+                if not device:
+                    return False
+            try:
+                result = device.set_value(dp_id, normalized)
+            except Exception as e:
+                self._log_device_failure(
+                    f"set_dp {device_id} dp={dp_id} attempt {attempt + 1}",
+                    device_id,
+                    e,
+                    retryable=(attempt == 0),
+                )
+                result = {"Error": str(e), "Err": "exception", "Payload": None}
             ok = not (isinstance(result, dict) and (result.get("Error") or result.get("Err")))
             err_code = result.get("Error") or result.get("Err") if isinstance(result, dict) else None
             self.logger.debug("set_dp %s dp=%s value=%s -> ok=%s, result=%s",
@@ -161,12 +267,18 @@ class TuyaLocalClient:
             if not ok and err_code is not None:
                 self.logger.debug("  device error response: Error=%s Err=%s (full=%s)",
                                   result.get("Error"), result.get("Err"), result)
+            if not ok and attempt == 0 and self._is_retryable_error(result):
+                self.logger.debug(
+                    "set_dp %s dp=%s: reconnecting after transient error",
+                    device_id,
+                    dp_id,
+                )
+                if self._reconnect_device(device_id):
+                    continue
             if isinstance(result, dict) and (result.get("Error") or result.get("Err")):
                 return False
             return True
-        except Exception as e:
-            self.logger.error("set_dp %s dp=%s failed: %s", device_id, dp_id, e)
-            return False
+        return False
     
     def set_multiple_dps(self, device_id: str, dps: Dict[int, Any]) -> bool:
         """
@@ -181,22 +293,40 @@ class TuyaLocalClient:
         """
         device = self.devices.get(device_id)
         if not device:
-            self.logger.error(f"Device {device_id} not found in local client")
+            self.logger.error("Device %s not found in local client", device_id)
             return False
         
-        try:
-            result = device.set_multiple_values(dps)
+        for attempt in range(2):
+            if attempt > 0:
+                device = self.devices.get(device_id)
+                if not device:
+                    return False
+            try:
+                result = device.set_multiple_values(dps)
+            except Exception as e:
+                self._log_device_failure(
+                    f"set_multiple_dps attempt {attempt + 1}",
+                    device_id,
+                    e,
+                    retryable=(attempt == 0),
+                )
+                result = {"Error": str(e), "Err": "exception", "Payload": None}
             ok = not (isinstance(result, dict) and (result.get("Error") or result.get("Err")))
             self.logger.debug("set_multiple_dps %s dps=%s -> ok=%s, result=%s",
                               device_id, dps, ok, result)
             if not ok and isinstance(result, dict):
                 self.logger.debug("  device error: Error=%s Err=%s", result.get("Error"), result.get("Err"))
+            if not ok and attempt == 0 and self._is_retryable_error(result):
+                self.logger.debug(
+                    "set_multiple_dps %s: reconnecting after transient error",
+                    device_id,
+                )
+                if self._reconnect_device(device_id):
+                    continue
             if isinstance(result, dict) and (result.get("Error") or result.get("Err")):
                 return False
             return True
-        except Exception as e:
-            self.logger.error("set_multiple_dps %s failed: %s", device_id, e)
-            return False
+        return False
     
     def scan_local(self, timeout: int = 18) -> List[Dict]:
         """
@@ -233,7 +363,7 @@ class TuyaLocalClient:
             return result
             
         except Exception as e:
-            self.logger.error(f"Error scanning local network: {e}")
+            self.logger.error("Error scanning local network: %s", e)
             return []
     
     def detect_device(self, device_id: str) -> Optional[Dict]:
@@ -269,15 +399,15 @@ class TuyaLocalClient:
         try:
             status = device.status()
             return status is not None and 'dps' in status
-        except:
+        except Exception:
             return False
     
     def close_all(self):
         """Close all device connections"""
-        for device_id, device in list(self.devices.items()):
+        for _, device in list(self.devices.items()):
             try:
                 device.close()
-            except:
+            except Exception:
                 pass
         
         self.devices.clear()
