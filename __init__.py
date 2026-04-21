@@ -237,8 +237,11 @@ class Tuya(BasePlugin):
 
     def _set_device_online(self, device_id: str, online: bool):
         """Update online flag in DB and notify frontend via WebSocket."""
+        propagate_online = False
         with session_scope() as session:
             dev = session.query(TuyaDevice).filter_by(device_id=device_id).one_or_none()
+            if dev:
+                propagate_online = True
             if dev and dev.online != online:
                 dev.online = online
                 if online:
@@ -247,6 +250,22 @@ class Tuya(BasePlugin):
                     'device_id': device_id,
                     'online': online,
                 })
+        if propagate_online:
+            self._propagate_online_to_links(device_id, online)
+
+    def _propagate_online_to_links(self, device_id: str, online: bool):
+        """Propagate synthetic 'online' state to linked object properties."""
+        links = self._db_get_links(device_id)
+        if not links:
+            return
+        for link in links:
+            if link.get('code') != 'online':
+                continue
+            target_obj = link.get('linked_object')
+            target_prop = link.get('linked_property')
+            if not target_obj or not target_prop:
+                continue
+            updateProperty(f"{target_obj}.{target_prop}", bool(online), source=self.name)
 
     def _update_dps_cache(self, device_id: str, status: dict):
         """Store DPS values in memory. Update timestamp only when value changes."""
@@ -1112,6 +1131,16 @@ class Tuya(BasePlugin):
                             'label': row.get('name', code),
                         })
 
+                # Synthetic property for linking connectivity state.
+                if not any(item.get('code') == 'online' for item in dps_list):
+                    dps_list.append({
+                        'code': 'online',
+                        'dp_id': None,
+                        'type': 'bool',
+                        'writable': False,
+                        'label': 'Online',
+                    })
+
                 dps_cache = self._get_dps_for_display(device_id)
                 dps_with_links = []
                 for dps in dps_list:
@@ -1124,6 +1153,30 @@ class Tuya(BasePlugin):
                     cached = dps_cache.get(str(dp_id)) if dp_id is not None else None
                     if cached is None and dps.get('code'):
                         cached = dps_cache.get(dps['code'])
+
+                    if dps.get('code') == 'online':
+                        current_value = bool(dev.get('online', False))
+                        updated_at = dev.get('last_seen')
+                        last_changed = (
+                            updated_at.isoformat() + 'Z'
+                            if hasattr(updated_at, 'isoformat')
+                            else (str(updated_at) if updated_at else None)
+                        )
+                        dps_with_links.append({
+                            'code': dps['code'],
+                            'dp_id': dp_id,
+                            'type': dps.get('type', 'bool'),
+                            'writable': False,
+                            'label': dps.get('label', dps['code']),
+                            'linked_object': s.get('linked_object', ''),
+                            'linked_property': s.get('linked_property', ''),
+                            'linked_method': s.get('linked_method', ''),
+                            'read_only': False,
+                            'current_value': current_value,
+                            'converted_value': current_value,
+                            'last_changed': last_changed,
+                        })
+                        continue
 
                     # Показываем только реально поддерживаемые DPS:
                     #  - либо есть в текущем статусе устройства (cached != None),
@@ -1175,6 +1228,29 @@ class Tuya(BasePlugin):
                         dp_id = dps.get('dp_id')
                         meta = self._get_dps_meta(category, dps['code'])
                         has_transform = bool(meta.get("scale") or meta.get("converter"))
+                        if dps.get('code') == 'online':
+                            current_value = bool(dev.get('online', False))
+                            updated_at = dev.get('last_seen')
+                            last_changed = (
+                                updated_at.isoformat() + 'Z'
+                                if hasattr(updated_at, 'isoformat')
+                                else (str(updated_at) if updated_at else None)
+                            )
+                            dps_with_links.append({
+                                'code': dps['code'],
+                                'dp_id': dp_id,
+                                'type': dps.get('type', 'bool'),
+                                'writable': False,
+                                'label': dps.get('label', dps['code']),
+                                'linked_object': s.get('linked_object', ''),
+                                'linked_property': s.get('linked_property', ''),
+                                'linked_method': s.get('linked_method', ''),
+                                'read_only': False,
+                                'current_value': current_value,
+                                'converted_value': current_value,
+                                'last_changed': last_changed,
+                            })
+                            continue
                         dps_with_links.append({
                             'code': dps['code'],
                             'dp_id': dp_id,
