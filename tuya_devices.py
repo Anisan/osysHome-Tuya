@@ -233,6 +233,23 @@ class TuyaDPSReference:
                 "switch_backlight": {"type": PropertyType.Bool,    "dp_id": 16, "writable": True,  "label": "Backlight"},
             },
         },
+        "dlq": {
+            "label": "Circuit Breaker",
+            "dps": {
+                "switch":           {"type": PropertyType.Bool,    "dp_id": 1,  "writable": True,  "label": "Switch"},
+                "switch_1":         {"type": PropertyType.Bool,    "dp_id": 1,  "writable": True,  "label": "Switch 1"},
+                "switch_2":         {"type": PropertyType.Bool,    "dp_id": 2,  "writable": True,  "label": "Switch 2"},
+                "countdown_1":      {"type": PropertyType.Integer, "dp_id": 9,  "writable": True,  "label": "Countdown 1 (s)"},
+                "countdown_2":      {"type": PropertyType.Integer, "dp_id": 10, "writable": True,  "label": "Countdown 2 (s)"},
+                "cur_current":      {"type": PropertyType.Integer, "dp_id": 18, "writable": False, "label": "Current (mA)"},
+                # Power and voltage are reported with 0.1 scale, convert to real units for UI
+                "cur_power":        {"type": PropertyType.Integer, "dp_id": 19, "writable": False, "label": "Power (0.1 W)", "scale": 10},
+                "cur_voltage":      {"type": PropertyType.Integer, "dp_id": 20, "writable": False, "label": "Voltage (0.1 V)", "scale": 10},
+                "child_lock":       {"type": PropertyType.Bool,    "dp_id": 13, "writable": True,  "label": "Child Lock"},
+                "relay_status":     {"type": PropertyType.String,  "dp_id": 14, "writable": True,  "label": "Power-on State"},
+                "switch_backlight": {"type": PropertyType.Bool,    "dp_id": 16, "writable": True,  "label": "Backlight"},
+            },
+        },
         "pc": {
             "label": "Power Strip",
             "dps": {
@@ -527,6 +544,16 @@ class TuyaDPSReference:
                 "va_humidity":        {"type": PropertyType.Integer, "dp_id": 19, "writable": False, "label": "Humidity"},
             },
         },
+        "jqbj": {
+            "label": "Formaldehyde Detector",
+            "dps": {
+                "co2_value":          {"type": PropertyType.Integer, "dp_id": 22,  "writable": False, "label": "CO2 (ppm)"},
+                "voc_value":          {"type": PropertyType.Integer, "dp_id": 21, "writable": False, "label": "VOC", "scale": 100},
+                "ch2o_value":         {"type": PropertyType.Integer, "dp_id": 2, "writable": False, "label": "Formaldehyde (CH₂O)", "scale": 100},
+                "va_temperature":     {"type": PropertyType.Integer, "dp_id": 18, "writable": False, "label": "Temperature", "scale": 10},
+                "va_humidity":        {"type": PropertyType.Integer, "dp_id": 19, "writable": False, "label": "Humidity", "scale": 10},
+            },
+        },        
         "sgbj": {
             "label": "Siren / Alarm",
             "dps": {
