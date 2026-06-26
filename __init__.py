@@ -12,7 +12,7 @@ from flask import request, jsonify
 
 from app.core.MonitoredThreadPool import MonitoredThreadPool
 from app.core.main.BasePlugin import BasePlugin
-from app.core.lib.object import updateProperty, setLinkToObject
+from app.core.lib.object import updateProperty, setLinkToObject, getProperty, callMethodThread
 from app.core.lib.constants import PropertyType
 from app.authentication.handlers import handle_admin_required
 from app.database import session_scope
@@ -238,10 +238,12 @@ class Tuya(BasePlugin):
     def _set_device_online(self, device_id: str, online: bool):
         """Update online flag in DB and notify frontend via WebSocket."""
         propagate_online = False
+        old_online = None
         with session_scope() as session:
             dev = session.query(TuyaDevice).filter_by(device_id=device_id).one_or_none()
             if dev:
                 propagate_online = True
+                old_online = dev.online
             if dev and dev.online != online:
                 dev.online = online
                 if online:
@@ -251,9 +253,47 @@ class Tuya(BasePlugin):
                     'online': online,
                 })
         if propagate_online:
-            self._propagate_online_to_links(device_id, online)
+            self._propagate_online_to_links(device_id, online, old_online=old_online)
 
-    def _propagate_online_to_links(self, device_id: str, online: bool):
+    def _update_linked_property(self, link: dict, value, raw_value=None, code: str = '', old_value=None):
+        """Update linked property and/or invoke linked_method when value changes."""
+        target_obj = (link.get('linked_object') or '').strip()
+        target_prop = (link.get('linked_property') or '').strip()
+        linked_method = (link.get('linked_method') or '').strip()
+
+        if not target_obj:
+            return
+        if not target_prop and not linked_method:
+            return
+
+        if target_prop:
+            prop_name = f"{target_obj}.{target_prop}"
+            prev_value = getProperty(prop_name)
+            if prev_value == value:
+                return
+            updateProperty(prop_name, value, source=self.name)
+            event_old_value = prev_value
+        else:
+            if old_value == value:
+                return
+            event_old_value = old_value
+
+        if linked_method:
+            method_args = {
+                'VALUE': value,
+                'NEW_VALUE': value,
+                'OLD_VALUE': event_old_value,
+                'SOURCE': self.name,
+            }
+            if target_prop:
+                method_args['PROPERTY'] = target_prop
+            if code:
+                method_args['DPS_CODE'] = code
+            if raw_value is not None:
+                method_args['RAW_VALUE'] = raw_value
+            callMethodThread(f"{target_obj}.{linked_method}", method_args, self.name)
+
+    def _propagate_online_to_links(self, device_id: str, online: bool, old_online=None):
         """Propagate synthetic 'online' state to linked object properties."""
         links = self._db_get_links(device_id)
         if not links:
@@ -261,11 +301,7 @@ class Tuya(BasePlugin):
         for link in links:
             if link.get('code') != 'online':
                 continue
-            target_obj = link.get('linked_object')
-            target_prop = link.get('linked_property')
-            if not target_obj or not target_prop:
-                continue
-            updateProperty(f"{target_obj}.{target_prop}", bool(online), source=self.name)
+            self._update_linked_property(link, bool(online), code='online', old_value=old_online)
 
     def _update_dps_cache(self, device_id: str, status: dict):
         """Store DPS values in memory. Update timestamp only when value changes."""
@@ -419,17 +455,23 @@ class Tuya(BasePlugin):
 
     def _apply_status(self, device_id: str, status: dict):
         """Write Tuya DPS values to linked system object properties via DB links."""
-        self._update_dps_cache(device_id, status)
         links = self._db_get_links(device_id)
         if not links:
+            self._update_dps_cache(device_id, status)
             return
+        with self._lock:
+            prev_cache = {
+                k: dict(v) for k, v in self._dps_cache.get(device_id, {}).items()
+            }
+        self._update_dps_cache(device_id, status)
         dev_info = self._db_get_device(device_id)
         category = dev_info.get("category") if dev_info else None
         for link in links:
             code = link.get('code', '')
-            target_obj = link.get('linked_object')
-            target_prop = link.get('linked_property')
-            if not target_obj or not target_prop:
+            target_obj = (link.get('linked_object') or '').strip()
+            target_prop = (link.get('linked_property') or '').strip()
+            linked_method = (link.get('linked_method') or '').strip()
+            if not target_obj or (not target_prop and not linked_method):
                 continue
             value = status.get(code)
             if value is None:
@@ -437,17 +479,24 @@ class Tuya(BasePlugin):
             if value is not None:
                 meta = self._get_dps_meta(category, code)
                 user_value = self._from_tuya_value(value, meta)
+                cached = prev_cache.get(code) or prev_cache.get(str(link.get('dp_id', '')))
+                prev_raw = cached.get('value') if cached else None
+                prev_user = (
+                    self._from_tuya_value(prev_raw, meta) if prev_raw is not None else None
+                )
                 self.logger.debug(
-                    "_apply_status %s: %s.%s = %s (raw=%s, scale=%s, from DPS %s)",
+                    "_apply_status %s: %s -> %s = %s (raw=%s, scale=%s, from DPS %s)",
                     device_id,
                     target_obj,
-                    target_prop,
+                    target_prop or linked_method,
                     user_value,
                     value,
                     meta.get("scale"),
                     code,
                 )
-                updateProperty(f"{target_obj}.{target_prop}", user_value, source=self.name)
+                self._update_linked_property(
+                    link, user_value, raw_value=value, code=code, old_value=prev_user,
+                )
 
     def cyclic_task(self):
         """Periodically poll device status"""
