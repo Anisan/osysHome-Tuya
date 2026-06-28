@@ -499,22 +499,22 @@ class Tuya(BasePlugin):
                 )
 
     def cyclic_task(self):
-        """Periodically poll device status"""
+        """Poll device status once per framework cycle (BasePlugin._cyclic_task loops)."""
         poll_interval = self.config.get('poll_interval', 30)
-        while not self.event.is_set():
-            started_at = time.monotonic()
-            polled_devices = 0
-            try:
-                polled_devices = self._poll_devices()
-            except Exception as e:
-                self.logger.error(f"Error in cyclic task: {e}")
-            elapsed = time.monotonic() - started_at
-            self.logger.debug(
-                "Poll cycle complete: devices=%d elapsed=%.3fs interval=%.3fs",
-                polled_devices,
-                elapsed,
-                float(poll_interval),
-            )
+        started_at = time.monotonic()
+        polled_devices = 0
+        try:
+            polled_devices = self._poll_devices()
+        except Exception as e:
+            self.logger.error(f"Error in cyclic task: {e}")
+        elapsed = time.monotonic() - started_at
+        self.logger.debug(
+            "Poll cycle complete: devices=%d elapsed=%.3fs interval=%.3fs",
+            polled_devices,
+            elapsed,
+            float(poll_interval),
+        )
+        if self.event and not self.event.is_set():
             self.event.wait(max(0.0, poll_interval - elapsed))
     
     def _poll_devices(self):
