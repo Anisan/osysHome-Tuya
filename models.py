@@ -12,6 +12,8 @@ class TuyaDevice(SurrogatePK, db.Model):
     ip = Column(String(45))
     local_key = Column(String(255))
     protocol_version = Column(String(10), default="3.3")
+    # Per-device poll/control: default (module setting) | cloud | local | both
+    connection_mode = Column(String(20), default="default")
     online = Column(Boolean, default=False)
     enabled = Column(Boolean, default=True)
     discovered_at = Column(DateTime)
@@ -29,6 +31,7 @@ class TuyaDevice(SurrogatePK, db.Model):
             "ip": self.ip,
             "local_key": self.local_key,
             "protocol_version": self.protocol_version,
+            "connection_mode": self.connection_mode or "default",
             "online": self.online,
             "enabled": self.enabled,
             "discovered_at": str(self.discovered_at) if self.discovered_at else None,

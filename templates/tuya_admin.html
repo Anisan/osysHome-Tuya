@@ -135,11 +135,20 @@
                                         </span>
                                     </td>
                                     <td>
-                                        <span v-if="device.ip" class="badge bg-primary" :title="device.ip">
-                                            <i class="fas fa-network-wired"></i> LAN
+                                        <span v-if="!device.connection_mode || device.connection_mode === 'default'" class="badge bg-light text-dark me-1" title="Default (module setting)">
+                                            <i class="fas fa-cog"></i> Default
                                         </span>
-                                        <span v-if="!device.ip && cloudConnected" class="badge bg-secondary">
+                                        <span v-else-if="device.connection_mode === 'cloud'" class="badge bg-secondary me-1" title="Cloud only">
                                             <i class="fas fa-cloud"></i> Cloud
+                                        </span>
+                                        <span v-else-if="device.connection_mode === 'local'" class="badge bg-primary me-1" title="Local only">
+                                            <i class="fas fa-network-wired"></i> Local
+                                        </span>
+                                        <span v-else class="badge bg-info me-1" title="Both (Cloud + Local)">
+                                            <i class="fas fa-exchange-alt"></i> Both
+                                        </span>
+                                        <span v-if="device.ip" class="badge bg-dark" :title="device.ip">
+                                            [[ device.ip ]]
                                         </span>
                                     </td>
                                     <td>
@@ -211,6 +220,16 @@
                             <option value="3.5">3.5</option>
                         </select>
                         <small class="form-text text-muted">{{ _('Try 3.1 if local control fails with error 904') }}</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">{{ _('Connection Mode') }}</label>
+                        <select v-model="editDevice.connection_mode" class="form-select">
+                            <option value="default">{{ _('Default (module setting)') }}</option>
+                            <option value="cloud">Cloud only</option>
+                            <option value="local">Local only</option>
+                            <option value="both">Both (Cloud + Local)</option>
+                        </select>
+                        <small class="form-text text-muted">{{ _('How this device is polled and controlled') }}</small>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">{{ _('Category') }}</label>
@@ -643,6 +662,7 @@ new Vue({
             local_key: '',
             ip_address: '',
             protocol_version: '3.3',
+            connection_mode: 'default',
             category: 'unknown',
             enabled: true
         },
@@ -746,6 +766,7 @@ new Vue({
                 local_key: '',
                 ip_address: '',
                 protocol_version: '3.3',
+                connection_mode: 'default',
                 category: 'unknown',
                 enabled: true
             };
@@ -762,6 +783,7 @@ new Vue({
                 local_key: device.local_key || '',
                 ip_address: device.ip || '',
                 protocol_version: device.protocol_version || '3.3',
+                connection_mode: device.connection_mode || 'default',
                 category: device.category || 'unknown',
                 enabled: device.enabled !== false
             };

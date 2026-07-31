@@ -81,3 +81,16 @@ class AddDeviceForm(FlaskForm):
         validators=[Optional()],
         description='Device IP address (optional, can be auto-discovered)'
     )
+
+    connection_mode = SelectField(
+        'Connection Mode',
+        choices=[
+            ('default', 'Default (module setting)'),
+            ('cloud', 'Cloud only'),
+            ('local', 'Local only'),
+            ('both', 'Both (Cloud + Local)')
+        ],
+        validators=[Optional()],
+        default='default',
+        description='How this device is polled and controlled'
+    )

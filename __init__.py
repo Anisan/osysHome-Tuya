@@ -34,7 +34,7 @@ class Tuya(BasePlugin):
         self.description = "Tuya smart home device integration"
         self.category = "Devices"
         self.author = "Eraser"
-        self.version = "0.1-alpha"
+        self.version = "0.2-alpha"
         self.actions = ['cycle', 'search', 'widget']
         
         self.cloud_client: Optional[TuyaCloudClient] = None
@@ -98,6 +98,23 @@ class Tuya(BasePlugin):
             return v
         return None
 
+    def _normalize_device_connection_mode(self, mode) -> str:
+        """Normalize stored per-device mode: default | cloud | local | both."""
+        m = str(mode or 'default').strip().lower()
+        return m if m in ('default', 'cloud', 'local', 'both') else 'default'
+
+    def _resolve_connection_mode(self, device_mode=None) -> str:
+        """Effective poll/control mode: module setting when device uses default."""
+        stored = self._normalize_device_connection_mode(device_mode)
+        if stored == 'default':
+            m = str(self.config.get('connection_mode') or 'both').strip().lower()
+            return m if m in ('cloud', 'local', 'both') else 'both'
+        return stored
+
+    def _normalize_connection_mode(self, mode) -> str:
+        """Normalize to effective cloud | local | both (resolves device default)."""
+        return self._resolve_connection_mode(mode)
+
     def _db_get_device(self, device_id: str) -> Optional[dict]:
         with session_scope() as session:
             dev = session.query(TuyaDevice).filter_by(device_id=device_id).one_or_none()
@@ -111,6 +128,10 @@ class Tuya(BasePlugin):
         with session_scope() as session:
             dev = session.query(TuyaDevice).filter_by(device_id=device_id).one_or_none()
             pv = self._normalize_protocol_version(info)
+            raw_mode = info.get('connection_mode')
+            mode = None
+            if raw_mode is not None and str(raw_mode).strip() != '':
+                mode = self._normalize_device_connection_mode(raw_mode)
             # Category reported by cloud / scan (may be unknown to our reference table)
             reported_category = info.get('category') or (dev.category if dev else None) or 'unknown'
             from plugins.Tuya.tuya_devices import TuyaDPSReference
@@ -130,6 +151,8 @@ class Tuya(BasePlugin):
                 dev.online = info.get('online', dev.online)
                 if pv:
                     dev.protocol_version = pv
+                if mode is not None:
+                    dev.connection_mode = mode
                 dev.last_seen = datetime.utcnow()
             else:
                 dev = TuyaDevice(
@@ -139,6 +162,7 @@ class Tuya(BasePlugin):
                     ip=info.get('ip'),
                     local_key=info.get('local_key'),
                     protocol_version=pv or info.get('protocol_version', '3.3'),
+                    connection_mode=mode or 'default',
                     online=info.get('online', False),
                     discovered_at=datetime.utcnow(),
                     last_seen=datetime.utcnow(),
@@ -218,6 +242,9 @@ class Tuya(BasePlugin):
 
     def _register_device_locally(self, dev: dict):
         """Register a device with the local tinytuya client if possible."""
+        mode = self._resolve_connection_mode(dev.get('connection_mode'))
+        if mode == 'cloud':
+            return
         if self.local_client and dev.get('local_key') and dev.get('ip'):
             pv = dev.get('protocol_version', '3.3')
             self.local_client.add_device(dev['id'], dev['ip'], dev['local_key'], pv)
@@ -230,6 +257,11 @@ class Tuya(BasePlugin):
         """Handle Pulsar push notification from cloud"""
         self.logger.debug(f"Pulsar update for {device_id}: {status}")
         try:
+            dev = self._db_get_device(device_id)
+            mode = self._resolve_connection_mode(dev.get('connection_mode') if dev else 'default')
+            if mode == 'local':
+                self.logger.debug("Ignoring Pulsar for %s (effective connection_mode=local)", device_id)
+                return
             self._set_device_online(device_id, True)
             self._apply_status(device_id, status)
         except Exception as e:
@@ -598,33 +630,47 @@ class Tuya(BasePlugin):
         """Get cloud status for a device as fallback or primary source."""
         return self._get_cloud_status(device_id) if self.cloud_client else {}
 
-    def _poll_device_status(self, device_id: str) -> tuple[Dict, Optional[str]]:
-        """Poll device status and return both payload and source."""
+    def _poll_device_status(self, device_id: str, connection_mode: str = 'default') -> tuple[Dict, Optional[str]]:
+        """Poll device status according to per-device connection_mode and return payload + source."""
+        mode = self._resolve_connection_mode(connection_mode)
         started_at = time.monotonic()
-        local_status = self._poll_device_local(device_id)
-        if local_status:
-            self.logger.debug(
-                "Poll %s: local status ready in %.3fs",
-                device_id,
-                time.monotonic() - started_at,
-            )
-            return local_status, "local"
+
+        if mode in ('local', 'both'):
+            local_status = self._poll_device_local(device_id)
+            if local_status:
+                self.logger.debug(
+                    "Poll %s: local status ready in %.3fs (mode=%s)",
+                    device_id,
+                    time.monotonic() - started_at,
+                    mode,
+                )
+                return local_status, "local"
+            if mode == 'local':
+                self.logger.debug(
+                    "Poll %s: no local status after %.3fs (mode=local)",
+                    device_id,
+                    time.monotonic() - started_at,
+                )
+                return {}, None
 
         local_elapsed = time.monotonic() - started_at
-        cloud_status = self._poll_device_cloud(device_id)
-        if cloud_status:
-            self.logger.debug(
-                "Poll %s: cloud fallback ready in %.3fs (local_wait=%.3fs)",
-                device_id,
-                time.monotonic() - started_at,
-                local_elapsed,
-            )
-            return cloud_status, "cloud"
+        if mode in ('cloud', 'both'):
+            cloud_status = self._poll_device_cloud(device_id)
+            if cloud_status:
+                self.logger.debug(
+                    "Poll %s: cloud status ready in %.3fs (local_wait=%.3fs, mode=%s)",
+                    device_id,
+                    time.monotonic() - started_at,
+                    local_elapsed,
+                    mode,
+                )
+                return cloud_status, "cloud"
         self.logger.debug(
-            "Poll %s: no status after %.3fs (local_wait=%.3fs)",
+            "Poll %s: no status after %.3fs (local_wait=%.3fs, mode=%s)",
             device_id,
             time.monotonic() - started_at,
             local_elapsed,
+            mode,
         )
         return {}, None
 
@@ -637,7 +683,9 @@ class Tuya(BasePlugin):
         """Poll one device and safely apply the result."""
         device_id = dev['id']
         try:
-            status, source = self._poll_device_status(device_id)
+            status, source = self._poll_device_status(
+                device_id, dev.get('connection_mode', 'default')
+            )
             self._handle_poll_result(device_id, source, status)
         except Exception as e:
             self._poll_device_error(device_id, e)
@@ -679,31 +727,38 @@ class Tuya(BasePlugin):
 
         dev_info = self._db_get_device(device_id)
         category = dev_info.get("category") if dev_info else None
+        mode = self._resolve_connection_mode(
+            dev_info.get("connection_mode") if dev_info else "default"
+        )
         meta = self._get_dps_meta(category, code)
         tuya_value = self._to_tuya_value(value, meta)
 
+        use_local = mode in ("local", "both")
+        use_cloud = mode in ("cloud", "both")
+
         self.logger.debug(
-            "Command: device=%s code=%s dp_id=%s value=%s -> tuya_value=%s (scale=%s, local_avail=%s, cloud_avail=%s)",
+            "Command: device=%s code=%s dp_id=%s value=%s -> tuya_value=%s (scale=%s, mode=%s, local_avail=%s, cloud_avail=%s)",
             device_id,
             code,
             dp_id,
             value,
             tuya_value,
             meta.get("scale"),
-            bool(self.local_client and device_id in self.local_client.devices and dp_id is not None),
-            bool(self.cloud_client and code),
+            mode,
+            bool(use_local and self.local_client and device_id in self.local_client.devices and dp_id is not None),
+            bool(use_cloud and self.cloud_client and code),
         )
 
         success = False
         method_used = None
-        if self.local_client and device_id in self.local_client.devices and dp_id is not None:
+        if use_local and self.local_client and device_id in self.local_client.devices and dp_id is not None:
             self.logger.debug("Trying local set_dp first")
             success = self.local_client.set_dp(device_id, int(dp_id), tuya_value)
             method_used = "local" if success else None
             if not success:
-                self.logger.debug("Local set_dp failed (see TuyaLocalClient debug), will try cloud")
+                self.logger.debug("Local set_dp failed (see TuyaLocalClient debug), will try cloud" if use_cloud else "Local set_dp failed")
 
-        if not success and self.cloud_client and code:
+        if not success and use_cloud and self.cloud_client and code:
             self.logger.debug("Trying cloud command")
             success = self._send_cloud_command(device_id, code, tuya_value)
             method_used = "cloud" if success else None
@@ -717,10 +772,10 @@ class Tuya(BasePlugin):
             # Re-apply status so that linked properties receive normalized value
             self._apply_status(device_id, {code: tuya_value})
         else:
-            self.logger.error("Failed to send command to %s: %s=%s (tried local=%s, cloud=%s)",
-                              device_id, code, value,
-                              bool(self.local_client and device_id in (self.local_client.devices or {})),
-                              bool(self.cloud_client and code))
+            self.logger.error("Failed to send command to %s: %s=%s (mode=%s, tried local=%s, cloud=%s)",
+                              device_id, code, value, mode,
+                              bool(use_local and self.local_client and device_id in (self.local_client.devices or {})),
+                              bool(use_cloud and self.cloud_client and code))
 
     # ── Command senders ─────────────────────────────────────────────────
 
@@ -867,6 +922,7 @@ class Tuya(BasePlugin):
                 'ip': data.get('ip_address'),
                 'category': data.get('category', 'unknown'),
                 'protocol_version': data.get('protocol_version', '3.3'),
+                'connection_mode': data.get('connection_mode', 'default'),
             }
             dev_dict = self._db_upsert_device(info)
             self._register_device_locally(dev_dict)
@@ -884,6 +940,7 @@ class Tuya(BasePlugin):
                     'ip': data.get('ip_address'),
                     'category': data.get('category'),
                     'protocol_version': data.get('protocol_version', '3.3'),
+                    'connection_mode': data.get('connection_mode', 'default'),
                 }
                 dev_dict = self._db_upsert_device(info)
 
@@ -1097,11 +1154,12 @@ class Tuya(BasePlugin):
 
                 category = dev.get('category', '')
 
-                # Fetch fresh status when opening links (local or cloud)
+                # Fetch fresh status when opening links (respect per-device connection_mode)
                 status = {}
-                if self.local_client and device_id in self.local_client.devices:
+                mode = self._resolve_connection_mode(dev.get('connection_mode', 'default'))
+                if mode in ('local', 'both') and self.local_client and device_id in self.local_client.devices:
                     status = self.local_client.get_status(device_id)
-                if not status and self.cloud_client:
+                if not status and mode in ('cloud', 'both') and self.cloud_client:
                     status = self.cloud_client.get_device_status(device_id)
                 if status:
                     self._update_dps_cache(device_id, status)
@@ -1362,3 +1420,89 @@ class Tuya(BasePlugin):
             self.local_client.close_all()
         if self._poll_pool:
             self._poll_pool.shutdown(wait=True)
+
+
+    # --- MCP integration ---
+
+    def mcp_capabilities(self):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_capabilities()
+
+    def mcp_config_schema(self):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_config_schema()
+
+    def mcp_entity_schema(self, collection: str):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_entity_schema(collection)
+
+    def mcp_list_entities(
+        self,
+        collection: str,
+        query: str = None,
+        limit: int = 100,
+        device_id=None,
+        enabled=None,
+        online=None,
+        linked_object=None,
+        has_linked_object=None,
+    ):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_list_entities(
+            collection,
+            query=query,
+            limit=limit,
+            device_id=device_id,
+            enabled=enabled,
+            online=online,
+            linked_object=linked_object,
+            has_linked_object=has_linked_object,
+        )
+
+    def mcp_get_entity(self, collection: str, entity_id):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_get_entity(collection, entity_id)
+
+    def mcp_upsert_entity(self, collection: str, payload: dict, entity_id=None):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_upsert_entity(collection, payload, entity_id=entity_id)
+
+    def mcp_delete_entity(self, collection: str, entity_id):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_delete_entity(collection, entity_id)
+
+    def mcp_validate_entity_code(self, collection: str, code: str):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_validate_entity_code(collection, code)
+
+    def mcp_run_entity_dry(self, collection: str, code: str, context: dict = None):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_run_entity_dry(collection, code, context=context)
+
+    def mcp_invoke(self, operation: str, params: dict = None):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_invoke(operation, params or {})
+
+    def mcp_entity_revision(self, collection: str, entity_id):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_entity_revision(collection, entity_id)
+
+    def mcp_validate_entity(self, collection: str, payload: dict, entity_id=None):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_validate_entity(collection, payload, entity_id=entity_id)
+
+    def mcp_tools(self):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_descriptors()[0]
+
+    def mcp_resources(self):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_descriptors()[1]
+
+    def mcp_prompts(self):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_descriptors()[2]
+
+    def mcp_get_prompt(self, name: str, arguments: dict = None):
+        from plugins.Tuya import mcp_support
+        return mcp_support.mcp_get_prompt(name, arguments or {})
