@@ -12,7 +12,7 @@ from flask import request, jsonify
 
 from app.core.MonitoredThreadPool import MonitoredThreadPool
 from app.core.main.BasePlugin import BasePlugin
-from app.core.lib.object import updateProperty, setLinkToObject, getProperty, callMethodThread
+from app.core.lib.object import updateProperty, setLinkToObject, removeLinkFromObject, getProperty, callMethodThread
 from app.core.lib.constants import PropertyType
 from app.authentication.handlers import handle_admin_required
 from app.database import session_scope
@@ -34,7 +34,7 @@ class Tuya(BasePlugin):
         self.description = "Tuya smart home device integration"
         self.category = "Devices"
         self.author = "Eraser"
-        self.version = "0.2-alpha"
+        self.version = "0.3-alpha"
         self.actions = ['cycle', 'search', 'widget']
         
         self.cloud_client: Optional[TuyaCloudClient] = None
@@ -794,6 +794,36 @@ class Tuya(BasePlugin):
         ok = self.cloud_client.send_commands(device_id, [{"code": code, "value": v}])
         self.logger.debug("Cloud command %s %s=%s -> %s", device_id, code, v, ok)
         return ok
+
+    def changeObject(self, event, object_name, property_name, method_name, new_value):
+        with session_scope() as session:
+            rows = session.query(TuyaDeviceProperty).filter(
+                TuyaDeviceProperty.linked_object == object_name
+            ).all()
+            for row in rows:
+                if new_value is None and property_name is None and method_name is None:
+                    if row.linked_property:
+                        removeLinkFromObject(row.linked_object, row.linked_property, self.name)
+                    row.linked_object = None
+                    row.linked_property = None
+                    row.linked_method = None
+                elif property_name is None and method_name is None:
+                    old_prop = row.linked_property
+                    if old_prop:
+                        removeLinkFromObject(object_name, old_prop, self.name)
+                    row.linked_object = new_value
+                    if old_prop and new_value:
+                        setLinkToObject(new_value, old_prop, self.name)
+                elif property_name:
+                    if (row.linked_property or '') == property_name:
+                        removeLinkFromObject(object_name, property_name, self.name)
+                        row.linked_property = new_value
+                        if new_value:
+                            setLinkToObject(object_name, new_value, self.name)
+                elif method_name:
+                    if (row.linked_method or '') == method_name:
+                        row.linked_method = new_value
+            session.commit()
 
     # ── Search / widget ─────────────────────────────────────────────────
 
